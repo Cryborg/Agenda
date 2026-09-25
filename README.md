@@ -2,6 +2,8 @@
 
 Agenda personnel (PWA) synchronisé avec Google Agenda, pensé pour la garde alternée.
 
+En ligne : https://cryborg.github.io/Agenda/
+
 ## Ce qui change par rapport à Google Agenda
 
 Dans Google Agenda, un événement de plusieurs jours qui commence à 19:00 est affiché en haut, comme une journée entière, avec juste « 19:00 » écrit dessus. Impossible de voir d'un coup d'œil chez qui sont les enfants vendredi à 18:00.
@@ -44,7 +46,7 @@ L'appli parle directement à l'API Google Calendar depuis ton navigateur. Il te 
      `.../auth/calendar.events` et `.../auth/calendar.calendarlist.readonly`.
    - **Audience > Utilisateurs de test** : ajoute ton adresse Gmail. L'appli peut rester en mode « Test », c'est suffisant pour un usage perso.
 4. **Clients > Créer un client** : type **Application Web**.
-   - **Origines JavaScript autorisées** : ajoute `http://localhost:8080` et, si tu la publies, l'adresse de ta version en ligne (ex. `https://tonpseudo.github.io`). L'origine exacte est affichée dans les paramètres de l'appli, avec un clic pour la copier.
+   - **Origines JavaScript autorisées** : ajoute `http://localhost:8080` et, si tu la publies, `https://cryborg.github.io` (l'origine seule, sans `/Agenda`). L'origine exacte est affichée dans les paramètres de l'appli, avec un clic pour la copier.
    - Pas besoin d'URI de redirection.
 5. Copie l'**ID client** (`xxxx.apps.googleusercontent.com`), ouvre l'appli, bouton **Paramètres** (roue dentée), colle-le et enregistre.
 6. Clique sur **Connecter Google Agenda** dans la barre latérale. Google affichera un avertissement « appli non validée » : c'est normal pour une appli perso en mode Test, clique sur *Continuer*.
@@ -61,7 +63,7 @@ Le site est 100 % statique, avec des chemins relatifs. Avec GitHub Pages :
 
 1. Pousse le dépôt sur GitHub.
 2. **Settings > Pages** : source « Deploy from a branch », branche `main`, dossier `/ (root)`.
-3. Ajoute `https://tonpseudo.github.io` aux origines JavaScript autorisées de l'ID client.
+3. Ajoute `https://cryborg.github.io` aux origines JavaScript autorisées de l'ID client.
 4. Sur le téléphone, ouvre l'adresse dans Chrome puis menu **Ajouter à l'écran d'accueil**.
 
 ## Organisation du code
