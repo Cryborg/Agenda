@@ -59,7 +59,8 @@ const state = {
   calendars: [],
   calById: new Map(),
   hiddenCals: new Set(),
-  hiddenPeople: new Set(LS.get('agenda.hiddenPeople', [])),
+  hiddenPeople: new Set(),
+  loadError: null,
   events: [],
   byKey: new Map(),
   cache: new Map(),
@@ -145,6 +146,10 @@ function personVisible(ev) {
 const visibleEvents = () => state.events.filter((ev) => !state.hiddenCals.has(ev.calendarId) && personVisible(ev));
 const colorOf = (ev) => eventColor(ev, state.calById);
 
+function saveHiddenPeople() {
+  LS.set(`agenda.hiddenPeople.${state.store?.kind || 'local'}`, [...state.hiddenPeople]);
+}
+
 function saveHiddenCals() {
   LS.set(`agenda.hidden.${state.store?.kind || 'local'}`, [...state.hiddenCals]);
 }
@@ -176,6 +181,7 @@ function setCalendars(cals) {
   state.calById = new Map(cals.map((c) => [c.id, c]));
   const saved = LS.get(`agenda.hidden.${state.store?.kind || 'local'}`, null);
   state.hiddenCals = new Set(saved ?? cals.filter((c) => c.selected === false).map((c) => c.id));
+  state.hiddenPeople = new Set(LS.get(`agenda.hiddenPeople.${state.store?.kind || 'local'}`, []));
 }
 
 async function loadCalendars() {
@@ -206,11 +212,17 @@ async function refresh({ force = false } = {}) {
     state.events = events;
     state.cache.set(key, events);
     state.lastFetch = Date.now();
+    state.loadError = null;
     persistOffline();
     if (events.partialError) toast(`Un agenda n'a pas pu être chargé : ${events.partialError.message}`, 'error');
     render();
   } catch (e) {
-    if (seq === state.seq) handleError(e);
+    if (seq !== state.seq) return;
+    if (!(e instanceof AuthError)) {
+      console.error(e);
+      state.loadError = e.message || String(e);
+      render();
+    } else handleError(e);
   } finally {
     if (seq === state.seq) setLoading(false);
   }
@@ -321,7 +333,11 @@ function render() {
 
 function renderBanner() {
   const el = $('#banner');
-  if (state.store?.kind === 'google' && state.authExpired) {
+  if (state.loadError && !state.authExpired) {
+    el.hidden = false;
+    el.innerHTML = `<span>Impossible de charger les événements : ${esc(state.loadError)}</span>
+      <button class="btn btn-primary" data-action="retry">Réessayer</button>`;
+  } else if (state.store?.kind === 'google' && state.authExpired) {
     el.hidden = false;
     el.innerHTML = `<span>La connexion à Google a expiré (elle dure une heure). Les événements affichés peuvent ne pas être à jour.</span>
       <button class="btn btn-primary" data-action="reconnect">Se reconnecter</button>`;
@@ -404,14 +420,24 @@ function renderMain(days) {
   else if (state.renderedView !== state.view) state.scrollTop = null;
   state.renderedView = state.view;
 
+  const filter = filterBar();
   if (state.view === 'month') {
-    main.innerHTML = renderMonth(days);
+    main.innerHTML = filter + renderMonth(days);
     fitMonthCells();
   } else {
-    main.innerHTML = renderTimeGrid(days);
+    main.innerHTML = filter + renderTimeGrid(days);
     const sc = $('.tg-scroll', main);
     sc.scrollTop = state.scrollTop ?? settings.scrollHour * HOUR_H;
   }
+}
+
+function filterBar() {
+  if (!state.hiddenPeople.size) return '';
+  const masked = state.events.filter((ev) => !state.hiddenCals.has(ev.calendarId) && !personVisible(ev)).length;
+  const shown = people.all(state.events).filter((n) => !state.hiddenPeople.has(n));
+  const who = shown.length ? `Filtre actif : ${esc(shown.join(', '))}${state.hiddenPeople.has(NONE) ? '' : ' et sans personne'}` : 'Filtre par personne actif';
+  return `<div class="filter-bar">${icon('users', 16)}<span>${who}${masked ? ` (${masked} événement${masked > 1 ? 's' : ''} masqué${masked > 1 ? 's' : ''})` : ''}</span>
+    <button class="btn btn-ghost btn-sm" data-action="people-all">Tout afficher</button></div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1128,7 +1154,7 @@ function wire() {
   $('#views-select').onchange = (e) => setView(e.target.value);
   $('#btn-people-all').onclick = () => {
     state.hiddenPeople.clear();
-    LS.set('agenda.hiddenPeople', []);
+    saveHiddenPeople();
     render();
   };
 
@@ -1139,6 +1165,11 @@ function wire() {
     if (a.dataset.action === 'reconnect') connectGoogle({ reconnect: true });
     else if (a.dataset.action === 'connect') connectGoogle();
     else if (a.dataset.action === 'disconnect') disconnectGoogle();
+    else if (a.dataset.action === 'people-all') $('#btn-people-all').click();
+    else if (a.dataset.action === 'retry') {
+      state.cache.clear();
+      refresh({ force: true });
+    }
   });
 
   // Sidebar
@@ -1153,7 +1184,7 @@ function wire() {
       if (t.checked) refresh({ force: true });
     } else if (t.dataset.person) {
       t.checked ? state.hiddenPeople.delete(t.dataset.person) : state.hiddenPeople.add(t.dataset.person);
-      LS.set('agenda.hiddenPeople', [...state.hiddenPeople]);
+      saveHiddenPeople();
       render();
     }
   });
@@ -1163,7 +1194,7 @@ function wire() {
     if (t.dataset.only) {
       const keep = t.dataset.only;
       state.hiddenPeople = new Set([...people.all(state.events).filter((n) => n !== keep), NONE]);
-      LS.set('agenda.hiddenPeople', [...state.hiddenPeople]);
+      saveHiddenPeople();
       render();
     } else if (t.dataset.miniDay) {
       state.cursor = parseDate(t.dataset.miniDay);
