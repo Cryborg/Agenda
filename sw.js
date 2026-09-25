@@ -2,7 +2,7 @@
 // les fichiers de l'appli (une mise à jour est visible au prochain
 // chargement), cache en secours. Les appels Google ne sont jamais interceptés.
 
-const CACHE = 'agenda-v1';
+const CACHE = 'agenda-v2';
 const SHELL = [
   './',
   'index.html',
@@ -18,6 +18,7 @@ const SHELL = [
   'js/store-google.js',
   'manifest.webmanifest',
   'icons/icon.svg',
+  'icons/favicon.svg',
 ];
 
 self.addEventListener('install', (e) => {
