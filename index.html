@@ -48,13 +48,15 @@
         <aside class="sidebar" id="sidebar">
           <button class="btn btn-create" id="btn-create"><span class="create-icon"></span>Créer</button>
           <div class="mini" id="mini"></div>
-          <section class="side-section">
-            <h2>Agendas</h2>
+          <section class="side-section collapsible" data-section="calendars">
+            <h2>
+              <button class="section-toggle" aria-expanded="true" aria-controls="cal-list"><span class="chevron"></span>Agendas</button>
+            </h2>
             <ul class="cal-list" id="cal-list"></ul>
           </section>
-          <section class="side-section">
+          <section class="side-section collapsible" data-section="people">
             <h2>
-              Personnes
+              <button class="section-toggle" aria-expanded="true" aria-controls="people-list"><span class="chevron"></span>Personnes</button>
               <button class="link-btn" id="btn-people-all" hidden>Tout afficher</button>
             </h2>
             <ul class="cal-list" id="people-list"></ul>

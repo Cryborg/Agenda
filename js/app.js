@@ -1308,6 +1308,24 @@ function wire() {
   $('#btn-settings').innerHTML = icon('settings', 20);
   $('.create-icon').innerHTML = icon('plus', 22);
 
+  // Sections repliables de la barre latérale (état mémorisé)
+  const collapsed = new Set(LS.get('agenda.collapsed', []));
+  for (const sec of document.querySelectorAll('.side-section.collapsible')) {
+    const btn = $('.section-toggle', sec);
+    $('.chevron', btn).innerHTML = icon('down', 18);
+    const apply = () => {
+      const closed = collapsed.has(sec.dataset.section);
+      sec.classList.toggle('collapsed', closed);
+      btn.setAttribute('aria-expanded', String(!closed));
+    };
+    apply();
+    btn.onclick = () => {
+      collapsed.has(sec.dataset.section) ? collapsed.delete(sec.dataset.section) : collapsed.add(sec.dataset.section);
+      LS.set('agenda.collapsed', [...collapsed]);
+      apply();
+    };
+  }
+
   $('#btn-menu').onclick = () => toggleSidebar();
   $('#scrim').onclick = () => toggleSidebar(false);
   $('#btn-today').onclick = goToday;
