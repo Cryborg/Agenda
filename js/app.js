@@ -1,7 +1,7 @@
 import {
   addDays, addMonths, startOfDay, startOfWeek, startOfMonth, sameDay, dayRange, dayDiff,
   toDateInput, toTimeInput, parseDate, combine, fmtTime, fmtDow, fmtMonthYear, fmtDayMonth,
-  fmtFull, capitalize, tzLabel, HOUR_MS, DAY_MS,
+  fmtFull, fmtShort, capitalize, tzLabel, HOUR_MS, DAY_MS,
 } from './dates.js';
 import { isSpanning, bandLayout, splitByDay, packColumns, railLayout } from './layout.js';
 import { PRESETS, presetOf, presetToRRule, describe } from './recur.js';
@@ -820,36 +820,27 @@ function openEditor(opts = {}) {
     el('preset').disabled = !seriesMode || (isRecurringInstance && seriesPreset === null);
     el('calendarId').disabled = !seriesMode;
     let txt = '';
-    try {
-      const t = readTimes();
+    let bad = false;
+    const t = readTimes();
+    if (!isNaN(t.start) && !isNaN(t.end)) {
       if (t.end > t.start) txt = t.allDay ? `${Math.round((t.end - t.start) / DAY_MS)} jour(s)` : `Durée : ${durationText(t.end - t.start)}`;
-    } catch {
-      /* champ incomplet */
+      else if (t.end < t.start || t.allDay) {
+        txt = 'La fin est avant le début.';
+        bad = true;
+      }
     }
-    $('#ed-duration').textContent = txt;
+    const dur = $('#ed-duration');
+    dur.textContent = txt;
+    dur.classList.toggle('bad', bad);
   };
 
-  // Garde la durée quand on change le début (comme Google)
-  let prev = readTimes();
-  const onStartChange = () => {
-    const t = readTimes();
-    if (isNaN(t.start)) return;
-    const dur = prev.end - prev.start;
-    const newEnd = t.allDay ? addDays(t.start, Math.max(1, Math.round(dur / DAY_MS)) - 1) : new Date(+t.start + dur);
-    el('endDate').value = toDateInput(newEnd);
-    if (!t.allDay) el('endTime').value = toTimeInput(newEnd);
-    prev = readTimes();
-    syncUi();
-  };
-  el('startDate').addEventListener('change', onStartChange);
-  el('startTime').addEventListener('change', onStartChange);
-  for (const n of ['endDate', 'endTime']) el(n).addEventListener('change', () => { prev = readTimes(); syncUi(); });
+  // Début et fin sont indépendants : changer le début ne déplace jamais la fin
+  for (const n of ['startDate', 'startTime', 'endDate', 'endTime']) el(n).addEventListener('change', syncUi);
   el('allDay').addEventListener('change', () => {
     if (!el('allDay').checked && el('startTime').value === '00:00' && el('endTime').value === '00:00') {
       el('startTime').value = '09:00';
       el('endTime').value = '10:00';
     }
-    prev = readTimes();
     syncUi();
   });
   f.addEventListener('change', (e) => {
@@ -1111,6 +1102,195 @@ function toast(msg, kind = '') {
 // ---------------------------------------------------------------------------
 // Interactions
 
+// ---------------------------------------------------------------------------
+// Glisser-déposer des événements (souris et stylet)
+//
+// - Événement horaire dans la grille : on le déplace au quart d'heure près,
+//   y compris vers un autre jour. La durée est conservée.
+// - Barre du bandeau, vue mois : on le déplace de jour en jour, en gardant
+//   ses heures de début et de fin.
+
+const SNAP_MS = 15 * 60_000;
+let suppressClickUntil = 0;
+
+function dayAt(x, y) {
+  for (const el of document.elementsFromPoint(x, y)) {
+    const d = el.dataset?.day || el.dataset?.bandDay || el.dataset?.cellDay;
+    if (d) return parseDate(d);
+  }
+  return null;
+}
+
+function gridTimeAt(x, y) {
+  const col = document.elementsFromPoint(x, y).find((el) => el.classList.contains('col'));
+  if (!col) return null;
+  const r = col.getBoundingClientRect();
+  const frac = Math.max(0, Math.min(1, (y - r.top) / r.height));
+  const day = parseDate(col.dataset.day);
+  return new Date(+day + frac * (addDays(day, 1) - day));
+}
+
+function clearDragMarks() {
+  for (const el of document.querySelectorAll('.drag-ghost, .drag-label')) el.remove();
+  for (const el of document.querySelectorAll('.drop-target')) el.classList.remove('drop-target');
+}
+
+function drawGridGhosts(ev, start, end) {
+  for (const el of document.querySelectorAll('.drag-ghost')) el.remove();
+  let first = true;
+  for (const col of document.querySelectorAll('#main .col')) {
+    const day = parseDate(col.dataset.day);
+    const next = addDays(day, 1);
+    const s = start > day ? start : day;
+    const e = end < next ? end : next;
+    if (e <= s && !(+start === +end && start >= day && start < next)) continue;
+    const g = document.createElement('div');
+    g.className = 'drag-ghost';
+    const color = colorOf(ev);
+    g.style.cssText = `top:${((s - day) / (next - day)) * 100}%;height:max(${((e - s) / (next - day)) * 100}%, 18px);--c:${color};--fg:${textOn(color)}`;
+    if (first) g.textContent = `${fmtTime(start)} → ${fmtTime(end)}`;
+    first = false;
+    col.append(g);
+  }
+}
+
+function markDays(start, end) {
+  for (const el of document.querySelectorAll('.drop-target')) el.classList.remove('drop-target');
+  for (const el of document.querySelectorAll('#main [data-cell-day], #main [data-band-day]')) {
+    const day = parseDate(el.dataset.cellDay || el.dataset.bandDay);
+    if (day < end && addDays(day, 1) > start) el.classList.add('drop-target');
+  }
+}
+
+function dragLabelText(ev, start, end) {
+  if (ev.allDay) {
+    const last = addDays(end, -1);
+    return sameDay(start, last) ? fmtShort(start) : `${fmtShort(start)} → ${fmtShort(last)}`;
+  }
+  return sameDay(start, end)
+    ? `${fmtShort(start)}, ${fmtTime(start)} → ${fmtTime(end)}`
+    : `${fmtShort(start)} ${fmtTime(start)} → ${fmtShort(end)} ${fmtTime(end)}`;
+}
+
+function startEventDrag(e, evEl) {
+  const ev = state.byKey.get(evEl.dataset.key);
+  if (!ev?.editable) return;
+  e.preventDefault();
+  const inGrid = evEl.classList.contains('ev');
+  const x0 = e.clientX;
+  const y0 = e.clientY;
+  const grab = inGrid ? gridTimeAt(x0, y0) : dayAt(x0, y0);
+  if (!grab) return;
+  const duration = ev.end - ev.start;
+  const scroller = $('#main .tg-scroll');
+  let dragging = false;
+  let target = null;
+  let label = null;
+
+  const onMove = (m) => {
+    if (!dragging) {
+      if (Math.hypot(m.clientX - x0, m.clientY - y0) < 5) return;
+      dragging = true;
+      closePopover();
+      document.body.classList.add('dragging');
+      evEl.classList.add('drag-src');
+      label = document.createElement('div');
+      label.className = 'drag-label';
+      document.body.append(label);
+    }
+    // Défilement automatique près des bords de la grille
+    if (scroller) {
+      const r = scroller.getBoundingClientRect();
+      if (m.clientY < r.top + 40) scroller.scrollTop -= 24;
+      else if (m.clientY > r.bottom - 40) scroller.scrollTop += 24;
+    }
+    if (inGrid) {
+      const t = gridTimeAt(m.clientX, m.clientY);
+      if (t) {
+        const start = new Date(Math.round((t - (grab - ev.start)) / SNAP_MS) * SNAP_MS);
+        target = { start, end: new Date(+start + duration) };
+        drawGridGhosts(ev, target.start, target.end);
+      }
+    } else {
+      const day = dayAt(m.clientX, m.clientY);
+      if (day) {
+        const delta = dayDiff(grab, day);
+        target = { start: addDays(ev.start, delta), end: addDays(ev.end, delta) };
+        markDays(target.start, target.end);
+      }
+    }
+    if (target) {
+      label.textContent = `${ev.title} · ${dragLabelText(ev, target.start, target.end)}`;
+      label.style.left = `${Math.min(m.clientX + 14, window.innerWidth - label.offsetWidth - 8)}px`;
+      label.style.top = `${m.clientY + 16}px`;
+    }
+  };
+
+  const finish = (drop) => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('keydown', onKey, true);
+    document.body.classList.remove('dragging');
+    evEl.classList.remove('drag-src');
+    clearDragMarks();
+    if (!dragging) return;
+    suppressClickUntil = Date.now() + 400;
+    if (drop && target && +target.start !== +ev.start) commitMove(ev, target.start, target.end);
+  };
+  const onUp = () => finish(true);
+  const onKey = (k) => {
+    if (k.key !== 'Escape') return;
+    k.stopPropagation();
+    finish(false);
+  };
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('keydown', onKey, true);
+}
+
+async function commitMove(ev, start, end) {
+  let scope = 'instance';
+  if (ev.recurringEventId) {
+    scope = await ask({
+      title: 'Déplacer un événement récurrent',
+      message: `« ${ev.title} » : ${dragLabelText(ev, start, end)}`,
+      buttons: [
+        { label: 'Annuler', value: null },
+        { label: 'Cette occurrence', value: 'instance' },
+        { label: 'Toute la série', value: 'series' },
+      ],
+    });
+    if (!scope) return;
+  }
+  const original = { ...ev };
+  const full = {
+    title: ev.title === '(Sans titre)' ? '' : ev.title,
+    calendarId: ev.calendarId,
+    allDay: ev.allDay,
+    start,
+    end,
+    location: ev.location || '',
+    description: ev.description || '',
+    colorId: ev.colorId || null,
+    people: [...(ev.people || [])],
+  };
+  // Affichage immédiat, confirmé (ou annulé) par la réponse du serveur
+  ev.start = start;
+  ev.end = end;
+  render();
+  try {
+    await state.store.updateEvent(original, full, { start }, scope);
+    toast('Événement déplacé');
+  } catch (err) {
+    ev.start = original.start;
+    ev.end = original.end;
+    render();
+    handleError(err);
+  }
+  state.cache.clear();
+  refresh({ force: true });
+}
+
 function toggleSidebar(open) {
   const sb = $('#sidebar');
   const on = open ?? !sb.classList.contains('open');
@@ -1216,6 +1396,7 @@ function wire() {
   // Vue principale
   const main = $('#main');
   main.addEventListener('click', (e) => {
+    if (Date.now() < suppressClickUntil) return; // fin d'un glisser-déposer
     const evEl = e.target.closest('[data-key]');
     if (evEl) {
       const ev = state.byKey.get(evEl.dataset.key);
@@ -1245,11 +1426,15 @@ function wire() {
     }
   });
 
-  // Souris : cliquer-glisser dans la grille pour créer
+  // Souris : glisser un événement pour le déplacer, ou cliquer-glisser
+  // dans un créneau vide de la grille pour créer
   main.addEventListener('pointerdown', (e) => {
     lastPointerType = e.pointerType;
+    if (e.pointerType === 'touch' || e.button !== 0) return;
+    const evEl = e.target.closest('[data-key]');
+    if (evEl) return startEventDrag(e, evEl);
     const col = e.target.closest('.col');
-    if (!col || e.pointerType === 'touch' || e.button !== 0 || e.target.closest('[data-key]')) return;
+    if (!col) return;
     e.preventDefault();
     closePopover();
     const day = parseDate(col.dataset.day);
