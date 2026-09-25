@@ -19,7 +19,6 @@ const LANE_H = 24; // hauteur d'une ligne du bandeau (vues jour/semaine)
 const LANE_M = 22; // hauteur d'une ligne du bandeau (vue mois)
 const RAIL_W = 6;
 const MIN_EVENT_MIN = 22; // hauteur minimale d'un événement, en minutes
-const NONE = '__none__'; // filtre "sans personne"
 const SYNC_EVERY_MS = 5 * 60_000;
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -139,7 +138,8 @@ function periodTitle(days) {
 
 function personVisible(ev) {
   if (!state.hiddenPeople.size) return true;
-  if (!ev.people?.length) return !state.hiddenPeople.has(NONE);
+  // Un événement sans personne assignée n'est jamais masqué par ce filtre
+  if (!ev.people?.length) return true;
   return ev.people.some((p) => !state.hiddenPeople.has(p));
 }
 
@@ -181,7 +181,8 @@ function setCalendars(cals) {
   state.calById = new Map(cals.map((c) => [c.id, c]));
   const saved = LS.get(`agenda.hidden.${state.store?.kind || 'local'}`, null);
   state.hiddenCals = new Set(saved ?? cals.filter((c) => c.selected === false).map((c) => c.id));
-  state.hiddenPeople = new Set(LS.get(`agenda.hiddenPeople.${state.store?.kind || 'local'}`, []));
+  // '__none__' : ancien filtre « Sans personne », retiré
+  state.hiddenPeople = new Set(LS.get(`agenda.hiddenPeople.${state.store?.kind || 'local'}`, []).filter((n) => n !== '__none__'));
 }
 
 async function loadCalendars() {
@@ -366,9 +367,6 @@ function renderSidebar(days) {
         <span class="box"></span><span class="avatar" style="--c:${people.color(n)}">${esc(initials(n))}</span><span class="name">${esc(n)}</span></label>
         <button class="mini-btn" data-only="${esc(n)}" title="N'afficher que ${esc(n)}">${icon('eye', 16)}</button></li>`,
   );
-  rows.push(`<li class="person-row"><label class="check" style="--c:#8e918f">
-      <input type="checkbox" data-person="${NONE}" ${state.hiddenPeople.has(NONE) ? '' : 'checked'}>
-      <span class="box"></span><span class="name muted">Sans personne</span></label></li>`);
   rows.push(`<li><form class="add-person" id="add-person"><input name="name" placeholder="Ajouter une personne" autocomplete="off" maxlength="40"><button class="mini-btn" aria-label="Ajouter">${icon('plus', 16)}</button></form></li>`);
   $('#people-list').innerHTML = rows.join('');
   $('#btn-people-all').hidden = !state.hiddenPeople.size;
@@ -420,24 +418,14 @@ function renderMain(days) {
   else if (state.renderedView !== state.view) state.scrollTop = null;
   state.renderedView = state.view;
 
-  const filter = filterBar();
   if (state.view === 'month') {
-    main.innerHTML = filter + renderMonth(days);
+    main.innerHTML = renderMonth(days);
     fitMonthCells();
   } else {
-    main.innerHTML = filter + renderTimeGrid(days);
+    main.innerHTML = renderTimeGrid(days);
     const sc = $('.tg-scroll', main);
     sc.scrollTop = state.scrollTop ?? settings.scrollHour * HOUR_H;
   }
-}
-
-function filterBar() {
-  if (!state.hiddenPeople.size) return '';
-  const masked = state.events.filter((ev) => !state.hiddenCals.has(ev.calendarId) && !personVisible(ev)).length;
-  const shown = people.all(state.events).filter((n) => !state.hiddenPeople.has(n));
-  const who = shown.length ? `Filtre actif : ${esc(shown.join(', '))}${state.hiddenPeople.has(NONE) ? '' : ' et sans personne'}` : 'Filtre par personne actif';
-  return `<div class="filter-bar">${icon('users', 16)}<span>${who}${masked ? ` (${masked} événement${masked > 1 ? 's' : ''} masqué${masked > 1 ? 's' : ''})` : ''}</span>
-    <button class="btn btn-ghost btn-sm" data-action="people-all">Tout afficher</button></div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1363,7 +1351,6 @@ function wire() {
     if (a.dataset.action === 'reconnect') connectGoogle({ reconnect: true });
     else if (a.dataset.action === 'connect') connectGoogle();
     else if (a.dataset.action === 'disconnect') disconnectGoogle();
-    else if (a.dataset.action === 'people-all') $('#btn-people-all').click();
     else if (a.dataset.action === 'retry') {
       state.cache.clear();
       refresh({ force: true });
@@ -1391,7 +1378,7 @@ function wire() {
     if (!t) return;
     if (t.dataset.only) {
       const keep = t.dataset.only;
-      state.hiddenPeople = new Set([...people.all(state.events).filter((n) => n !== keep), NONE]);
+      state.hiddenPeople = new Set(people.all(state.events).filter((n) => n !== keep));
       saveHiddenPeople();
       render();
     } else if (t.dataset.miniDay) {

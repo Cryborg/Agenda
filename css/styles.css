@@ -205,13 +205,6 @@ button { cursor: pointer; }
 .side-settings { display: none; }
 .scrim { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 30; }
 
-.filter-bar {
-  display: flex; align-items: center; gap: 10px; flex: none; flex-wrap: wrap;
-  margin: 8px 8px 0; padding: 4px 6px 4px 14px; border-radius: 10px;
-  background: var(--accent-soft); color: var(--accent); font-weight: 500;
-}
-.filter-bar span { flex: 1; min-width: 160px; }
-
 /* --- Barres d'événements longs (bandeau) -------------------------------- */
 
 .bar {
