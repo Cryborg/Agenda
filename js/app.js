@@ -60,6 +60,7 @@ const state = {
   hiddenCals: new Set(),
   hiddenPeople: new Set(),
   loadError: null,
+  offlineView: false,
   events: [],
   byKey: new Map(),
   cache: new Map(),
@@ -161,19 +162,71 @@ function rangeKey(days) {
   return `${state.store.kind}|${+days[0]}|${+addDays(days[days.length - 1], 1)}`;
 }
 
+// Copie hors ligne (Google) : une large fenêtre autour d'aujourd'hui, tous
+// agendas confondus, rechargée en arrière-plan. Chaque période consultée y est
+// aussi fusionnée, ce qui la prolonge au-delà de la fenêtre.
+const OFFLINE_BEFORE_MONTHS = 1;
+const OFFLINE_AFTER_MONTHS = 6;
+const OFFLINE_EVERY_MS = 30 * 60_000;
+
+// { calendars, events, from, to, at } en mémoire (dates en objets Date)
+let offline = null;
+
+function offlineWindow() {
+  const m = startOfMonth(new Date());
+  return { from: addMonths(m, -OFFLINE_BEFORE_MONTHS), to: addMonths(m, OFFLINE_AFTER_MONTHS + 1) };
+}
+
 function persistOffline() {
-  if (state.store?.kind !== 'google') return;
-  LS.set('agenda.offline', {
-    calendars: state.calendars,
-    events: state.events.map((e) => ({ ...e, start: e.start.toISOString(), end: e.end.toISOString() })),
-  });
+  if (state.store?.kind !== 'google' || !offline) return;
+  // rawDescription ne sert qu'à l'édition, impossible hors ligne : on gagne de la place
+  const events = offline.events.map(({ rawDescription, ...e }) => ({ ...e, start: e.start.toISOString(), end: e.end.toISOString() }));
+  LS.set('agenda.offline', { calendars: state.calendars, events, from: +offline.from, to: +offline.to, at: offline.at });
 }
 
 function loadOffline() {
   const o = LS.get('agenda.offline', null);
   if (!o) return;
+  offline = {
+    events: (o.events || []).map((e) => ({ ...e, start: new Date(e.start), end: new Date(e.end) })),
+    from: new Date(o.from || 0),
+    to: new Date(o.to || 0),
+    at: o.at || 0,
+  };
   setCalendars(o.calendars || []);
-  state.events = (o.events || []).map((e) => ({ ...e, start: new Date(e.start), end: new Date(e.end) }));
+}
+
+function offlineEvents(start, end) {
+  return (offline?.events || []).filter((e) => e.start < end && e.end > start);
+}
+
+// Remplace dans la copie les événements de [start, end) pour les agendas rechargés
+function mergeOffline(start, end, calIds, events) {
+  if (!offline) offline = { events: [], from: new Date(0), to: new Date(0), at: 0 };
+  const ids = new Set(calIds);
+  offline.events = offline.events.filter((e) => !ids.has(e.calendarId) || !(e.start < end && e.end > start)).concat(events);
+  persistOffline();
+}
+
+let prefetching = false;
+async function prefetchOffline({ force = false } = {}) {
+  if (state.store?.kind !== 'google' || !state.auth?.valid || prefetching) return;
+  if (!force && offline && Date.now() - offline.at < OFFLINE_EVERY_MS) return;
+  prefetching = true;
+  try {
+    const { from, to } = offlineWindow();
+    const ids = state.calendars.map((c) => c.id);
+    const events = await state.store.listEvents(from, to, ids);
+    if (events.partialError) return;
+    // On garde ce qui a été consulté hors de la fenêtre
+    const outside = (offline?.events || []).filter((e) => !(e.start < to && e.end > from));
+    offline = { events: outside.concat(events), from, to, at: Date.now() };
+    persistOffline();
+  } catch (e) {
+    console.warn('Copie hors ligne non mise à jour', e);
+  } finally {
+    prefetching = false;
+  }
 }
 
 function setCalendars(cals) {
@@ -191,12 +244,15 @@ async function loadCalendars() {
 
 async function refresh({ force = false } = {}) {
   if (!state.store) return;
+  const days = viewDays();
+  const start = days[0];
+  const end = addDays(days[days.length - 1], 1);
   if (state.store.kind === 'google' && !state.auth?.valid) {
     state.authExpired = true;
+    if (offline) state.events = offlineEvents(start, end);
     render();
     return;
   }
-  const days = viewDays();
   const key = rangeKey(days);
   if (!force && state.cache.has(key)) {
     state.events = state.cache.get(key);
@@ -206,24 +262,29 @@ async function refresh({ force = false } = {}) {
   setLoading(true);
   try {
     const ids = state.calendars.filter((c) => !state.hiddenCals.has(c.id)).map((c) => c.id);
-    const start = days[0];
-    const end = addDays(days[days.length - 1], 1);
     const events = await state.store.listEvents(start, end, ids);
     if (seq !== state.seq) return;
     state.events = events;
     state.cache.set(key, events);
     state.lastFetch = Date.now();
     state.loadError = null;
-    persistOffline();
+    state.offlineView = false;
+    if (state.store.kind === 'google' && !events.partialError) mergeOffline(start, end, ids, events);
     if (events.partialError) toast(`Un agenda n'a pas pu être chargé : ${events.partialError.message}`, 'error');
     render();
+    prefetchOffline();
   } catch (e) {
     if (seq !== state.seq) return;
     if (!(e instanceof AuthError)) {
       console.error(e);
       state.loadError = e.message || String(e);
+      state.offlineView = !!offline;
+      if (offline) state.events = offlineEvents(start, end);
       render();
-    } else handleError(e);
+    } else {
+      if (offline) state.events = offlineEvents(start, end);
+      handleError(e);
+    }
   } finally {
     if (seq === state.seq) setLoading(false);
   }
@@ -262,6 +323,10 @@ async function setupStore() {
   if (settings.mode === 'google' && state.auth) {
     state.store = new GoogleStore(state.auth);
     loadOffline();
+    if (offline) {
+      const days = viewDays();
+      state.events = offlineEvents(days[0], addDays(days[days.length - 1], 1));
+    }
     render();
     if (!state.auth.valid) {
       state.authExpired = true;
@@ -271,7 +336,9 @@ async function setupStore() {
     try {
       await loadCalendars();
     } catch (e) {
-      return handleError(e);
+      // Hors ligne avec une copie : on garde ses agendas, refresh() affichera le bandeau
+      if (e instanceof AuthError || !offline) return handleError(e);
+      state.store.calendars = new Map(state.calendars.map((c) => [c.id, c]));
     }
   } else {
     state.store = new LocalStore();
@@ -314,6 +381,7 @@ function disconnectGoogle() {
   settings.mode = 'local';
   saveSettings();
   LS.set('agenda.offline', null);
+  offline = null;
   setupStore();
 }
 
@@ -334,7 +402,12 @@ function render() {
 
 function renderBanner() {
   const el = $('#banner');
-  if (state.loadError && !state.authExpired) {
+  if (state.loadError && !state.authExpired && state.offlineView) {
+    el.hidden = false;
+    const at = offline?.at ? ` du ${fmtShort(new Date(offline.at))} à ${fmtTime(new Date(offline.at))}` : '';
+    el.innerHTML = `<span>Pas de connexion. Affichage de la copie hors ligne${at}.</span>
+      <button class="btn btn-primary" data-action="retry">Réessayer</button>`;
+  } else if (state.loadError && !state.authExpired) {
     el.hidden = false;
     el.innerHTML = `<span>Impossible de charger les événements : ${esc(state.loadError)}</span>
       <button class="btn btn-primary" data-action="retry">Réessayer</button>`;
