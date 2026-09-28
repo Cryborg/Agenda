@@ -3,6 +3,7 @@
 
 import { addDays, parseDate, toDateInput, toRFC3339, startOfWeek, startOfDay, shiftLike } from './dates.js';
 import { expand } from './recur.js';
+import { putBlob, pruneLocal } from './images.js';
 
 const KEY = 'agenda.local.v1';
 
@@ -28,6 +29,7 @@ function seed() {
     description: '',
     colorId: null,
     people: [],
+    attachments: [],
     rrule: null,
     exdates: [],
     allDay: false,
@@ -85,6 +87,7 @@ export class LocalStore {
   reset() {
     this.db = seed();
     this.save();
+    this.pruneImages();
   }
 
   async listCalendars() {
@@ -117,6 +120,7 @@ export class LocalStore {
           description: m.description,
           colorId: m.colorId,
           people: m.people || [],
+          attachments: m.attachments || [],
           recurringEventId: m.rrule ? m.id : null,
           originalStart: m.rrule ? o.start : null,
           editable: true,
@@ -143,6 +147,7 @@ export class LocalStore {
       description: data.description || '',
       colorId: data.colorId || null,
       people: data.people || [],
+      attachments: data.attachments || [],
       rrule: data.rrule || null,
       exdates: [],
     });
@@ -165,6 +170,7 @@ export class LocalStore {
     if ('description' in changes) m.description = changes.description;
     if ('colorId' in changes) m.colorId = changes.colorId;
     if ('people' in changes) m.people = changes.people;
+    if ('attachments' in changes) m.attachments = changes.attachments;
     if ('calendarId' in changes) m.calendarId = changes.calendarId;
     if ('rrule' in changes) {
       m.rrule = changes.rrule;
@@ -191,6 +197,7 @@ export class LocalStore {
       m.end = serialize(end, allDay);
     }
     this.save();
+    if ('attachments' in changes) this.pruneImages();
   }
 
   async deleteEvent(ev, scope) {
@@ -201,5 +208,21 @@ export class LocalStore {
       this.db.events = this.db.events.filter((e) => e.id !== id);
     }
     this.save();
+    this.pruneImages();
+  }
+
+  // Images : rangées dans IndexedDB (localStorage est limité à quelques Mo)
+  async uploadImage(file) {
+    const fileId = `local:${uid()}`;
+    await putBlob(fileId, file);
+    return { fileId, title: file.name || 'Image', mimeType: file.type };
+  }
+
+  async fetchImage() {
+    throw new Error('Image introuvable sur cet appareil');
+  }
+
+  pruneImages() {
+    return pruneLocal(new Set(this.db.events.flatMap((e) => (e.attachments || []).map((a) => a.fileId))));
   }
 }

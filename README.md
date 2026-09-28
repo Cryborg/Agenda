@@ -20,6 +20,7 @@ Ici, les événements longs (journée entière, ou horaires de 24 h et plus) son
 - Création par cliquer-glisser dans la grille (ou appui sur un créneau au téléphone), modification, suppression, déplacement vers un autre agenda.
 - Événements récurrents : modifier ou supprimer une seule occurrence ou toute la série ; créer une récurrence (quotidienne, hebdomadaire, toutes les 2 semaines, mensuelle, annuelle).
 - **Personnes assignées** : tu peux assigner un événement à une ou plusieurs personnes, puis filtrer l'affichage par personne (l'œil à côté d'un nom n'affiche qu'elle). Les événements sans personne assignée restent toujours affichés. Ce ne sont **pas** des invités Google : personne n'est invité ni notifié. L'information est rangée dans une propriété privée de l'événement (`extendedProperties.private.agendaPeople`), donc elle suit l'événement sur tous tes appareils. Seules les personnes qui ont déjà accès à l'agenda concerné pourraient la lire via l'API, et Google Agenda ne l'affiche nulle part.
+- **Images** : ajoute des photos à un événement depuis l'éditeur (sur téléphone, l'appareil photo est proposé). Elles sont envoyées dans un dossier « Agenda » de ton Google Drive et attachées à l'événement comme pièces jointes : elles suivent l'événement sur tous tes appareils et apparaissent aussi dans Google Agenda. L'accès demandé (`drive.file`) ne permet de voir que les fichiers créés par l'appli, pas le reste de ton Drive. Les grandes photos sont réduites à 2560 px avant l'envoi. Une image déjà affichée reste consultable hors ligne. Retirer une image d'un événement ne la supprime pas du Drive. En mode local, les images restent dans le navigateur.
 - Mode local (sans compte Google) avec des exemples, dont une garde alternée : pratique pour essayer.
 - Installable sur téléphone et ordinateur (PWA), s'ouvre hors ligne avec les derniers événements chargés.
 - Interface sombre uniquement.
@@ -39,11 +40,11 @@ Puis ouvrir http://localhost:8080. Tests : `npm test`.
 L'appli parle directement à l'API Google Calendar depuis ton navigateur. Il te faut ton propre « ID client OAuth » (gratuit) :
 
 1. Va sur https://console.cloud.google.com/ et crée un projet (par exemple « Agenda »).
-2. **API et services > Bibliothèque** : cherche « Google Calendar API » et clique sur **Activer**.
+2. **API et services > Bibliothèque** : cherche « Google Calendar API » et clique sur **Activer**. Fais de même pour « Google Drive API » (pour les images).
 3. **Google Auth Platform** (ou « Écran de consentement OAuth ») :
    - Type d'utilisateur : **Externe**, nom de l'appli « Agenda », ton adresse e-mail.
    - **Accès aux données** : ajoute les champs d'application
-     `.../auth/calendar.events` et `.../auth/calendar.calendarlist.readonly`.
+     `.../auth/calendar.events`, `.../auth/calendar.calendarlist.readonly` et `.../auth/drive.file` (images).
    - **Audience > Utilisateurs de test** : ajoute ton adresse Gmail. L'appli peut rester en mode « Test », c'est suffisant pour un usage perso.
 4. **Clients > Créer un client** : type **Application Web**.
    - **Origines JavaScript autorisées** : ajoute `http://localhost:8080` et, si tu la publies, `https://cryborg.github.io` (l'origine seule, sans `/Agenda`). L'origine exacte est affichée dans les paramètres de l'appli, avec un clic pour la copier.
@@ -54,6 +55,8 @@ L'appli parle directement à l'API Google Calendar depuis ton navigateur. Il te 
 L'ID client n'est pas un secret : il ne donne accès à rien sans ta connexion.
 
 ### À savoir sur la connexion
+
+Si tu étais déjà connecté avant l'arrivée des images, le premier clic sur **Ajouter une image** rouvre la fenêtre Google pour autoriser Drive (une seule fois).
 
 Sans serveur, Google ne délivre que des jetons d'une heure. Quand il expire, un bandeau propose **Se reconnecter** (un clic, la fenêtre Google se ferme toute seule). Les événements restent affichés en attendant. Pour une connexion permanente, il faudrait ajouter un petit serveur (flux « code d'autorisation » avec jeton de rafraîchissement).
 
@@ -74,6 +77,7 @@ Le site est 100 % statique, avec des chemins relatifs. Avec GitHub Pages :
 | `js/recur.js` | Règles de récurrence (préréglages, expansion pour le mode local). |
 | `js/store-google.js` | Connexion OAuth (Google Identity Services) et API Calendar v3. |
 | `js/store-local.js` | Agenda local stocké dans le navigateur, même interface que Google. |
+| `js/images.js` | Images des événements : réduction avant envoi, copie locale (IndexedDB) pour l'affichage et le hors ligne. |
 | `js/people.js` | Registre local des personnes (noms, couleurs). |
 | `js/app.js` | Interface : vues, éditeur, filtres, synchro. |
 | `sw.js` | Service worker (hors ligne). |

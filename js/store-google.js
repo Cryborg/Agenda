@@ -6,10 +6,14 @@ import { parseDate, toDateInput, toRFC3339, localTimeZone, shiftLike, startOfDay
 import { rruleLine } from './recur.js';
 
 const API = 'https://www.googleapis.com/calendar/v3';
+const DRIVE = 'https://www.googleapis.com/drive/v3';
+const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
 const SCOPES = [
   'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
   'https://www.googleapis.com/auth/calendar.events',
 ];
+// Facultatif : sert aux images (l'appli ne voit que les fichiers qu'elle a créés)
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 const TOKEN_KEY = 'agenda.google.token';
 
 export class AuthError extends Error {
@@ -45,7 +49,7 @@ export class GoogleAuth {
     this.pending = null;
     try {
       const saved = JSON.parse(localStorage.getItem(TOKEN_KEY) || 'null');
-      if (saved && saved.clientId === clientId) Object.assign(this, { token: saved.token, expiresAt: saved.expiresAt });
+      if (saved && saved.clientId === clientId) Object.assign(this, { token: saved.token, expiresAt: saved.expiresAt, drive: !!saved.drive });
     } catch {
       /* rien */
     }
@@ -60,7 +64,7 @@ export class GoogleAuth {
     if (this.client) return;
     this.client = google.accounts.oauth2.initTokenClient({
       client_id: this.clientId,
-      scope: SCOPES.join(' '),
+      scope: [...SCOPES, DRIVE_SCOPE].join(' '),
       callback: (resp) => {
         const p = this.pending;
         this.pending = null;
@@ -71,8 +75,9 @@ export class GoogleAuth {
         }
         this.token = resp.access_token;
         this.expiresAt = Date.now() + Number(resp.expires_in || 3600) * 1000;
+        this.drive = google.accounts.oauth2.hasGrantedAllScopes(resp, DRIVE_SCOPE);
         try {
-          localStorage.setItem(TOKEN_KEY, JSON.stringify({ clientId: this.clientId, token: this.token, expiresAt: this.expiresAt }));
+          localStorage.setItem(TOKEN_KEY, JSON.stringify({ clientId: this.clientId, token: this.token, expiresAt: this.expiresAt, drive: this.drive }));
         } catch {
           /* rien */
         }
@@ -103,6 +108,7 @@ export class GoogleAuth {
   clear() {
     this.token = null;
     this.expiresAt = 0;
+    this.drive = false;
     try {
       localStorage.removeItem(TOKEN_KEY);
     } catch {
@@ -145,6 +151,23 @@ function readPeople(item) {
 
 const peopleBody = (people) => ({ private: { [PEOPLE_KEY]: people?.length ? JSON.stringify(people) : null } });
 
+// Pièce jointe Google : fileUrl obligatoire, le reste est déduit du fichier Drive
+const attachmentBody = (a) => stripNulls({ fileUrl: a.fileUrl, title: a.title || null, mimeType: a.mimeType || null, iconLink: a.iconLink || null });
+
+const FOLDER_KEY = 'agenda.drive.folder';
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
+
+function driveError(e) {
+  if (e instanceof AuthError) return e;
+  if (e.reason === 'accessNotConfigured' || /has not been used|is disabled/i.test(e.message)) {
+    return new Error("L'API Google Drive n'est pas activée dans ton projet Google Cloud (voir le README).");
+  }
+  if (e.reason === 'insufficientPermissions' || e.reason === 'PERMISSION_DENIED') {
+    return Object.assign(new Error("Pas d'accès à Google Drive : reconnecte-toi en cochant l'accès à Drive."), { driveAccess: true });
+  }
+  return e;
+}
+
 export class GoogleStore {
   constructor(auth) {
     this.kind = 'google';
@@ -152,14 +175,17 @@ export class GoogleStore {
     this.calendars = new Map();
   }
 
-  async api(path, { method = 'GET', query, body } = {}) {
+  // `path` relatif à l'API Calendar, ou adresse complète (Drive).
+  // `raw` + `type` : corps envoyé tel quel ; `blob` : réponse lue en binaire.
+  async api(path, { method = 'GET', query, body, raw, type, blob } = {}) {
     if (!this.auth.valid) throw new AuthError();
-    const url = new URL(API + path);
+    const url = new URL(path.startsWith('https:') ? path : API + path);
     for (const [k, v] of Object.entries(query || {})) if (v != null) url.searchParams.set(k, v);
+    const contentType = raw ? type : body ? 'application/json' : null;
     const res = await fetch(url, {
       method,
-      headers: { Authorization: `Bearer ${this.auth.token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-      body: body ? JSON.stringify(body) : undefined,
+      headers: { Authorization: `Bearer ${this.auth.token}`, ...(contentType ? { 'Content-Type': contentType } : {}) },
+      body: raw ?? (body ? JSON.stringify(body) : undefined),
     });
     if (res.status === 401) {
       this.auth.clear();
@@ -167,15 +193,18 @@ export class GoogleStore {
     }
     if (!res.ok) {
       let msg = `Erreur Google (${res.status})`;
+      let reason = '';
       try {
         const j = await res.json();
         if (j.error?.message) msg += ` : ${j.error.message}`;
+        reason = j.error?.errors?.[0]?.reason || j.error?.status || '';
       } catch {
         /* rien */
       }
-      throw new Error(msg);
+      throw Object.assign(new Error(msg), { status: res.status, reason });
     }
-    return res.status === 204 ? null : res.json();
+    if (res.status === 204) return null;
+    return blob ? res.blob() : res.json();
   }
 
   async listCalendars() {
@@ -219,6 +248,7 @@ export class GoogleStore {
       rawDescription: item.description || '',
       colorId: item.colorId || null,
       people: readPeople(item),
+      attachments: (item.attachments || []).map(({ fileId, fileUrl, title, mimeType, iconLink }) => ({ fileId, fileUrl, title, mimeType, iconLink })),
       recurringEventId: item.recurringEventId || null,
       htmlLink: item.htmlLink,
       editable: cal.editable && !item.locked && (organizerSelf || !!item.guestsCanModify),
@@ -276,8 +306,9 @@ export class GoogleStore {
       end: stripNulls(timeBody(data.allDay, data.end)),
       recurrence: data.rrule ? [data.rrule] : null,
       extendedProperties: data.people?.length ? peopleBody(data.people) : null,
+      attachments: data.attachments?.length ? data.attachments.map(attachmentBody) : null,
     });
-    await this.api(`/calendars/${encodeURIComponent(data.calendarId)}/events`, { method: 'POST', body });
+    await this.api(`/calendars/${encodeURIComponent(data.calendarId)}/events`, { method: 'POST', body, query: { supportsAttachments: 'true' } });
   }
 
   async updateEvent(ev, full, changes, scope) {
@@ -290,6 +321,7 @@ export class GoogleStore {
     if ('description' in changes) body.description = changes.description;
     if ('colorId' in changes) body.colorId = changes.colorId;
     if ('people' in changes) body.extendedProperties = peopleBody(changes.people);
+    if ('attachments' in changes) body.attachments = changes.attachments.map(attachmentBody);
 
     let master = null;
     if (series && ('start' in changes || 'rrule' in changes)) master = await this.api(path);
@@ -317,7 +349,7 @@ export class GoogleStore {
       body.recurrence = changes.rrule ? [changes.rrule, ...others] : [];
     }
 
-    if (Object.keys(body).length) await this.api(path, { method: 'PATCH', body });
+    if (Object.keys(body).length) await this.api(path, { method: 'PATCH', body, query: { supportsAttachments: 'true' } });
     if ('calendarId' in changes) {
       await this.api(`${path}/move`, { method: 'POST', query: { destination: changes.calendarId } });
     }
@@ -326,5 +358,66 @@ export class GoogleStore {
   async deleteEvent(ev, scope) {
     const id = ev.recurringEventId && scope === 'series' ? ev.recurringEventId : ev.id;
     await this.api(this.eventPath(ev.calendarId, id), { method: 'DELETE' });
+  }
+
+  // --- Images (Google Drive, dossier « Agenda ») ---
+
+  async driveFolder() {
+    let id = localStorage.getItem(FOLDER_KEY);
+    if (id) return id;
+    const q = `name = 'Agenda' and mimeType = '${FOLDER_MIME}' and trashed = false`;
+    const r = await this.api(`${DRIVE}/files`, { query: { q, spaces: 'drive', fields: 'files(id)', pageSize: 1 } });
+    id = r.files?.[0]?.id;
+    if (!id) id = (await this.api(`${DRIVE}/files`, { method: 'POST', query: { fields: 'id' }, body: { name: 'Agenda', mimeType: FOLDER_MIME } })).id;
+    try {
+      localStorage.setItem(FOLDER_KEY, id);
+    } catch {
+      /* rien */
+    }
+    return id;
+  }
+
+  async uploadImage(file) {
+    try {
+      let folder = await this.driveFolder();
+      const send = () => {
+        const b = `agenda${Math.random().toString(36).slice(2)}`;
+        const meta = { name: file.name || 'Image', mimeType: file.type, parents: [folder] };
+        const raw = new Blob([
+          `--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n`,
+          `--${b}\r\nContent-Type: ${file.type || 'application/octet-stream'}\r\n\r\n`,
+          file,
+          `\r\n--${b}--`,
+        ]);
+        return this.api(DRIVE_UPLOAD, {
+          method: 'POST',
+          query: { uploadType: 'multipart', fields: 'id,name,mimeType,webViewLink,iconLink' },
+          raw,
+          type: `multipart/related; boundary=${b}`,
+        });
+      };
+      let f;
+      try {
+        f = await send();
+      } catch (e) {
+        // Dossier supprimé entre-temps : on en recrée un
+        if (e.status !== 404) throw e;
+        localStorage.removeItem(FOLDER_KEY);
+        folder = await this.driveFolder();
+        f = await send();
+      }
+      return { fileId: f.id, fileUrl: f.webViewLink, title: f.name, mimeType: f.mimeType, iconLink: f.iconLink };
+    } catch (e) {
+      throw driveError(e);
+    }
+  }
+
+  async fetchImage(att) {
+    if (!att.fileId) throw new Error('Image sans fichier Drive');
+    try {
+      return await this.api(`${DRIVE}/files/${encodeURIComponent(att.fileId)}`, { query: { alt: 'media' }, blob: true });
+    } catch (e) {
+      throw driveError(e);
+    }
   }
 }

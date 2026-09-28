@@ -10,6 +10,7 @@ import { LocalStore } from './store-local.js';
 import { GoogleAuth, GoogleStore, AuthError, loadGis } from './store-google.js';
 import { People, initials } from './people.js';
 import { icon } from './icons.js';
+import { isImage, imageUrl, putBlob, prepareImage } from './images.js';
 
 // ---------------------------------------------------------------------------
 // Constantes et état
@@ -706,6 +707,8 @@ function openPopover(ev, anchor) {
         .map((n) => `<span class="person-pill"><span class="avatar" style="--c:${people.color(n)}">${esc(initials(n))}</span>${esc(n)}</span>`)
         .join('')}</div></div>`
     : '';
+  const imgs = (ev.attachments || []).filter(isImage);
+  const files = (ev.attachments || []).filter((a) => !isImage(a) && a.fileUrl);
   pop.innerHTML = `<div class="pop-actions">
       ${ev.editable ? `<button class="icon-btn" data-pop="edit" title="Modifier">${icon('pencil', 18)}</button>
       <button class="icon-btn" data-pop="delete" title="Supprimer">${icon('trash', 18)}</button>` : ''}
@@ -717,9 +720,16 @@ function openPopover(ev, anchor) {
     ${whoList}
     ${ev.location ? `<div class="pop-row">${icon('pin', 18)}<div>${esc(ev.location)}</div></div>` : ''}
     ${ev.description ? `<div class="pop-row">${icon('text', 18)}<div class="pop-desc">${esc(ev.description)}</div></div>` : ''}
+    ${imgs.length ? `<div class="pop-row">${icon('image', 18)}<div class="thumbs">${imgs
+      .map((a, i) => `<button type="button" class="thumb" data-pop-img="${i}" title="${esc(a.title || 'Image')}"></button>`)
+      .join('')}</div></div>` : ''}
+    ${files.length ? `<div class="pop-row">${icon('paperclip', 18)}<div class="pop-files">${files
+      .map((a) => `<a href="${esc(a.fileUrl)}" target="_blank" rel="noopener">${esc(a.title || 'Pièce jointe')}</a>`)
+      .join('')}</div></div>` : ''}
     <div class="pop-row">${icon('calendar', 18)}<div>${esc(cal?.name || '')}</div></div>`;
   pop.hidden = false;
   placePopover(pop, anchor);
+  pop.querySelectorAll('[data-pop-img]').forEach((b) => loadThumb(b, imgs[+b.dataset.popImg]));
 
   if (ev.recurringEventId) {
     state.store
@@ -758,6 +768,71 @@ function closePopover() {
 }
 
 // ---------------------------------------------------------------------------
+// Images : vignettes et visionneuse
+//
+// Une image est une pièce jointe ({ fileId, title, … }) ou, dans l'éditeur,
+// une image pas encore envoyée ({ title, url }).
+
+const imageSrc = (a) => (a.url ? Promise.resolve(a.url) : imageUrl(state.store, a));
+
+function loadThumb(btn, a) {
+  imageSrc(a)
+    .then((url) => {
+      const img = new Image();
+      img.alt = '';
+      img.src = url;
+      btn.replaceChildren(img);
+    })
+    .catch((e) => {
+      console.warn('Image non chargée', e);
+      btn.classList.add('broken');
+      btn.innerHTML = icon('image', 22);
+    });
+}
+
+let viewSeq = 0;
+function openViewer(items, index) {
+  const dlg = $('#viewer');
+  let i = index;
+  const show = () => {
+    const a = items[i];
+    const seq = ++viewSeq;
+    const nav = (dir, name, label) =>
+      items.length > 1 ? `<button type="button" class="icon-btn viewer-nav" data-viewer="${dir}" aria-label="${label}">${icon(name, 28)}</button>` : '';
+    dlg.innerHTML = `<div class="viewer-bar">
+        <span class="viewer-title">${esc(a.title || 'Image')}${items.length > 1 ? ` <span class="muted">${i + 1} / ${items.length}</span>` : ''}</span>
+        ${a.fileUrl ? `<a class="icon-btn" href="${esc(a.fileUrl)}" target="_blank" rel="noopener" title="Ouvrir dans Google Drive">${icon('external', 20)}</a>` : ''}
+        <button type="button" class="icon-btn" data-viewer="close" aria-label="Fermer">${icon('x', 22)}</button></div>
+      <div class="viewer-stage">${nav(-1, 'left', 'Image précédente')}<div class="viewer-img"></div>${nav(1, 'right', 'Image suivante')}</div>`;
+    imageSrc(a)
+      .then((url) => {
+        if (seq !== viewSeq) return;
+        const img = new Image();
+        img.alt = a.title || '';
+        img.src = url;
+        $('.viewer-img', dlg).replaceChildren(img);
+      })
+      .catch(() => {
+        if (seq === viewSeq) $('.viewer-img', dlg).innerHTML = `<p class="muted">Impossible d'afficher cette image${a.fileUrl ? ' ici. Elle reste consultable dans Google Drive' : ''}.</p>`;
+      });
+  };
+  const go = (dir) => {
+    i = (i + dir + items.length) % items.length;
+    show();
+  };
+  dlg.onclick = (e) => {
+    const b = e.target.closest('[data-viewer]');
+    if (b) return b.dataset.viewer === 'close' ? dlg.close() : go(+b.dataset.viewer);
+    if (!e.target.closest('img, a, .viewer-title')) dlg.close();
+  };
+  dlg.onkeydown = (e) => {
+    if (items.length > 1 && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) go(e.key === 'ArrowRight' ? 1 : -1);
+  };
+  show();
+  dlg.showModal();
+}
+
+// ---------------------------------------------------------------------------
 // Éditeur
 
 let ghostEl = null;
@@ -793,9 +868,10 @@ function openEditor(opts = {}) {
   }
   const init = ev
     ? { title: ev.title === '(Sans titre)' ? '' : ev.title, calendarId: ev.calendarId, allDay: ev.allDay, start: ev.start, end: ev.end,
-        location: ev.location || '', description: ev.description || '', colorId: ev.colorId || '', people: [...(ev.people || [])], preset: '' }
+        location: ev.location || '', description: ev.description || '', colorId: ev.colorId || '', people: [...(ev.people || [])],
+        attachments: [...(ev.attachments || [])], preset: '' }
     : { title: '', calendarId: opts.calendarId || defaultCalendarId(), allDay: !!opts.allDay, start, end,
-        location: '', description: '', colorId: '', people: opts.people || [], preset: '' };
+        location: '', description: '', colorId: '', people: opts.people || [], attachments: [], preset: '' };
   // Pour une journée entière, la fin affichée est le dernier jour (inclus)
   const endShown = init.allDay ? addDays(init.end, -1) : init.end;
   const selected = new Set(init.people);
@@ -842,6 +918,12 @@ function openEditor(opts = {}) {
     <div class="field-row">${icon('palette', 18)}<div class="swatches">${colorRadios}</div></div>
     <div class="field-row">${icon('pin', 18)}<input name="location" placeholder="Lieu" value="${esc(init.location)}" autocomplete="off"></div>
     <div class="field-row">${icon('text', 18)}<textarea name="description" rows="3" placeholder="Description">${esc(init.description)}</textarea></div>
+    <div class="field-row">${icon('image', 18)}<div class="images-field">
+      <div class="thumbs" id="ed-images"></div>
+      <button type="button" class="btn btn-ghost btn-sm" data-ed="add-image">${icon('plus', 16)} Ajouter une image</button>
+      <input type="file" id="ed-file" accept="image/*" multiple hidden>
+      <div class="small" id="ed-img-note" hidden></div>
+    </div></div>
     <div class="form-error" id="ed-error" hidden></div>
     <div class="dlg-foot">
       ${ev ? `<button type="button" class="btn btn-danger-ghost" data-ed="delete">${icon('trash', 16)} Supprimer</button>` : ''}
@@ -865,6 +947,75 @@ function openEditor(opts = {}) {
         .join('') || '<span class="muted small">Aucune personne pour l\'instant.</span>';
   };
   renderPeople();
+
+  // Images : `kept` = pièces jointes conservées (images et autres fichiers),
+  // `fresh` = images choisies, envoyées seulement à l'enregistrement
+  const MAX_ATTACHMENTS = 25; // limite Google
+  let kept = [...init.attachments];
+  const fresh = [];
+  const imageItems = () => [
+    ...kept.filter(isImage).map((a) => ({ a, key: `k${kept.indexOf(a)}` })),
+    ...fresh.map((a, i) => ({ a, key: `f${i}` })),
+  ];
+  const renderImages = () => {
+    const items = imageItems();
+    $('#ed-images').innerHTML = items
+      .map(({ a, key }) => `<div class="thumb-wrap"><button type="button" class="thumb" data-img-view="${key}" title="${esc(a.title || 'Image')}"></button>
+        <button type="button" class="thumb-del" data-img-del="${key}" aria-label="Retirer l'image">${icon('x', 14)}</button></div>`)
+      .join('');
+    $('#ed-images').hidden = !items.length;
+    for (const b of f.querySelectorAll('[data-img-view]')) loadThumb(b, items.find((it) => it.key === b.dataset.imgView).a);
+  };
+  const imgNote = (msg, bad = false) => {
+    const n = $('#ed-img-note');
+    n.textContent = msg;
+    n.hidden = !msg;
+    n.classList.toggle('muted', !bad);
+    n.classList.toggle('bad', bad);
+  };
+  const fileInput = $('#ed-file');
+
+  const pickImages = (pick = true) => {
+    imgNote('');
+    const auth = state.auth;
+    if (state.store.kind === 'google' && !(auth?.valid && auth.drive)) {
+      // Jeton sans accès à Drive (ou expiré) : on le redemande, depuis ce clic
+      imgNote('Autorise l\'accès à Google Drive dans la fenêtre Google : les images y sont rangées, dans un dossier « Agenda ».');
+      auth
+        .signIn({ consent: !auth.drive })
+        .then(() => {
+          state.authExpired = false;
+          renderBanner();
+          if (!auth.drive) return imgNote("Sans l'accès à Google Drive, impossible d'ajouter des images. Recommence en cochant la case Drive.", true);
+          imgNote('');
+          if (!pick) return showError('');
+          try {
+            fileInput.showPicker();
+          } catch {
+            imgNote('Accès à Google Drive accordé. Clique à nouveau sur « Ajouter une image ».');
+          }
+        })
+        .catch((e) => imgNote(e.message || String(e), true));
+      return;
+    }
+    fileInput.click();
+  };
+
+  fileInput.addEventListener('change', async () => {
+    let files = [...fileInput.files].filter((file) => file.type.startsWith('image/'));
+    fileInput.value = '';
+    const room = MAX_ATTACHMENTS - kept.length - fresh.length;
+    if (files.length > room) {
+      imgNote(`${MAX_ATTACHMENTS} pièces jointes au maximum par événement.`, true);
+      files = files.slice(0, Math.max(0, room));
+    }
+    for (const file of files) {
+      const ready = await prepareImage(file);
+      fresh.push({ file: ready, title: ready.name || 'Image', url: URL.createObjectURL(ready) });
+    }
+    renderImages();
+  });
+  renderImages();
 
   const readTimes = () => {
     const allDay = el('allDay').checked;
@@ -929,9 +1080,19 @@ function openEditor(opts = {}) {
   });
 
   f.addEventListener('click', (e) => {
-    const t = e.target.closest('[data-ed],[data-person-toggle]');
+    const t = e.target.closest('[data-ed],[data-person-toggle],[data-img-view],[data-img-del]');
     if (!t) return;
-    if (t.dataset.personToggle) {
+    if (t.dataset.imgView) {
+      const items = imageItems();
+      openViewer(items.map((it) => it.a), items.findIndex((it) => it.key === t.dataset.imgView));
+    } else if (t.dataset.imgDel) {
+      const k = t.dataset.imgDel;
+      if (k[0] === 'k') kept.splice(+k.slice(1), 1);
+      else URL.revokeObjectURL(fresh.splice(+k.slice(1), 1)[0].url);
+      renderImages();
+    } else if (t.dataset.ed === 'add-image') pickImages();
+    else if (t.dataset.ed === 'grant-drive') pickImages(false);
+    else if (t.dataset.personToggle) {
       const n = t.dataset.personToggle;
       selected.has(n) ? selected.delete(n) : selected.add(n);
       renderPeople();
@@ -988,6 +1149,20 @@ function openEditor(opts = {}) {
     btn.disabled = true;
     btn.textContent = 'Enregistrement…';
     try {
+      // Nouvelles images d'abord, une à une : si la suite échoue, celles déjà
+      // envoyées passent dans `kept` et ne seront pas renvoyées
+      const total = fresh.length;
+      while (fresh.length) {
+        btn.textContent = total > 1 ? `Envoi des images (${total - fresh.length + 1}/${total})…` : "Envoi de l'image…";
+        const n = fresh[0];
+        const att = await state.store.uploadImage(n.file);
+        await putBlob(att.fileId, n.file).catch(() => {});
+        kept.push(att);
+        fresh.shift();
+        URL.revokeObjectURL(n.url);
+      }
+      btn.textContent = 'Enregistrement…';
+      full.attachments = kept;
       if (!ev) {
         await state.store.createEvent({ ...full, rrule: presetToRRule(el('preset').value) });
       } else {
@@ -998,6 +1173,8 @@ function openEditor(opts = {}) {
         if ((full.colorId || '') !== (init.colorId || '')) changes.colorId = full.colorId;
         if (full.calendarId !== init.calendarId && !el('calendarId').disabled) changes.calendarId = full.calendarId;
         if ([...selected].sort().join('\n') !== [...init.people].sort().join('\n')) changes.people = full.people;
+        const attKey = (l) => l.map((a) => a.fileId || a.fileUrl).join('\n');
+        if (attKey(full.attachments) !== attKey(init.attachments)) changes.attachments = full.attachments;
         if (full.allDay !== init.allDay || +full.start !== +init.start || +full.end !== +init.end) changes.start = full.start;
         const preset = el('preset').value;
         if (!el('preset').disabled && preset !== 'custom' && preset !== init.preset) changes.rrule = presetToRRule(preset);
@@ -1010,10 +1187,14 @@ function openEditor(opts = {}) {
       refresh({ force: true });
     } catch (err) {
       console.error(err);
+      renderImages();
       if (err instanceof AuthError) {
         state.authExpired = true;
         renderBanner();
         showError(`La connexion Google a expiré. <button type="button" class="btn btn-primary btn-sm" data-action="reconnect">Se reconnecter</button> puis enregistre à nouveau.`);
+      } else if (err.driveAccess) {
+        state.auth.drive = false;
+        showError(`${esc(err.message)} <button type="button" class="btn btn-primary btn-sm" data-ed="grant-drive">Autoriser Drive</button>`);
       } else showError(esc(err.message || String(err)));
     } finally {
       btn.disabled = false;
@@ -1023,7 +1204,10 @@ function openEditor(opts = {}) {
 
   if (ev && !isRecurringInstance) el('preset').value = '';
   syncUi();
-  dlg.addEventListener('close', clearGhost, { once: true });
+  dlg.addEventListener('close', () => {
+    clearGhost();
+    for (const n of fresh) URL.revokeObjectURL(n.url);
+  }, { once: true });
   dlg.showModal();
   if (!ev) el('title').focus();
 }
@@ -1334,6 +1518,7 @@ async function commitMove(ev, start, end) {
     description: ev.description || '',
     colorId: ev.colorId || null,
     people: [...(ev.people || [])],
+    attachments: [...(ev.attachments || [])],
   };
   // Affichage immédiat, confirmé (ou annulé) par la réponse du serveur
   ev.start = start;
@@ -1577,6 +1762,8 @@ function wire() {
 
   // Popover
   $('#popover').addEventListener('click', (e) => {
+    const img = e.target.closest('[data-pop-img]');
+    if (img && popEv) return openViewer(popEv.attachments.filter(isImage), +img.dataset.popImg);
     const b = e.target.closest('[data-pop]');
     if (!b || !popEv) return;
     const ev = popEv;
@@ -1585,7 +1772,7 @@ function wire() {
     else if (b.dataset.pop === 'delete') deleteFlow(ev);
   });
   document.addEventListener('pointerdown', (e) => {
-    if (!$('#popover').hidden && !e.target.closest('#popover') && !e.target.closest('[data-key]')) closePopover();
+    if (!$('#popover').hidden && !e.target.closest('#popover, #viewer, [data-key]')) closePopover();
   });
 
   // Clavier (mêmes raccourcis que Google Agenda)
