@@ -3,7 +3,7 @@ import {
   toDateInput, toTimeInput, parseDate, combine, fmtTime, fmtDow, fmtMonthYear, fmtDayMonth,
   fmtFull, fmtShort, capitalize, tzLabel, HOUR_MS, DAY_MS,
 } from './dates.js';
-import { isSpanning, bandLayout, splitByDay, packColumns, railLayout } from './layout.js';
+import { isSpanning, isMonthSpanning, bandLayout, splitByDay, packColumns, railLayout } from './layout.js';
 import { PRESETS, presetOf, presetToRRule, describe } from './recur.js';
 import { EVENT_COLORS, eventColor, textOn } from './colors.js';
 import { LocalStore } from './store-local.js';
@@ -628,8 +628,8 @@ function gridEvent(s, railPad, now) {
 
 function renderMonth(days) {
   const evs = visibleEvents();
-  const spanning = evs.filter(isSpanning);
-  const timed = evs.filter((e) => !isSpanning(e));
+  const spanning = evs.filter(isMonthSpanning);
+  const timed = evs.filter((e) => !isMonthSpanning(e));
   const now = new Date();
   const month = state.cursor.getMonth();
   const weeks = [];

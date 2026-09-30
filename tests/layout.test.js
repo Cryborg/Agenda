@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { axisPos, bandLayout, splitByDay, packColumns, railLayout, isSpanning } from '../js/layout.js';
+import { axisPos, bandLayout, splitByDay, packColumns, railLayout, isSpanning, isMonthSpanning } from '../js/layout.js';
 import { dayRange } from '../js/dates.js';
 
 // Semaine du lundi 14 au dimanche 20 septembre 2026
@@ -13,6 +13,14 @@ test('un événement de 24 h ou plus va dans le bandeau, pas un événement cour
   assert.equal(isSpanning(ev('pile 24 h', at(18, 19), at(19, 19))), true);
   assert.equal(isSpanning(ev('concert', at(18, 22), at(19, 1))), false);
   assert.equal(isSpanning({ ...ev('jour', at(18, 0), at(19, 0)), allDay: true }), true);
+});
+
+test('vue mois : une nuit de 12 h ou plus à cheval sur deux jours va aussi dans le bandeau', () => {
+  assert.equal(isMonthSpanning(ev('nuit chez papa', at(15, 16, 30), at(16, 8, 30))), true);
+  assert.equal(isMonthSpanning(ev('concert', at(18, 22), at(19, 1))), false);
+  assert.equal(isMonthSpanning(ev('longue journée', at(18, 8), at(18, 22))), false);
+  assert.equal(isMonthSpanning(ev("jusqu'à minuit", at(18, 10), at(19, 0))), false);
+  assert.equal(isMonthSpanning(ev('garde', at(18, 19), at(25, 19))), true);
 });
 
 test('un événement commençant vendredi 19:00 démarre aux 19/24 du vendredi', () => {

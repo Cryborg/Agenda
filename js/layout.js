@@ -7,11 +7,19 @@
 // toute la journée. Deux gardes qui se passent le relais à 19:00 partagent la
 // même ligne et se touchent exactement à l'heure du changement.
 
-import { addDays, HOUR_MS } from './dates.js';
+import { addDays, startOfDay, HOUR_MS } from './dates.js';
 
 export const SPAN_THRESHOLD_MS = 24 * HOUR_MS;
 
 export const isSpanning = (ev) => ev.allDay || ev.end - ev.start >= SPAN_THRESHOLD_MS;
+
+// Vue mois : une nuit à cheval sur deux jours (ex. 16:30 → 08:30 le lendemain)
+// est aussi dessinée en barre, sinon elle apparaît en deux lignes séparées.
+// Le seuil évite une barre illisible pour une soirée qui déborde après minuit.
+export const MONTH_SPAN_THRESHOLD_MS = 12 * HOUR_MS;
+
+export const isMonthSpanning = (ev) =>
+  isSpanning(ev) || (ev.end - ev.start >= MONTH_SPAN_THRESHOLD_MS && ev.end > addDays(startOfDay(ev.start), 1));
 
 const EPS = 1e-6;
 
